@@ -3,9 +3,9 @@ import javafx.scene.image.{Image, ImageView}
 object Env extends ImageView
 {
 	val images: Array[Image] = Array(
-		new Image("sw/lr/res/terrain.png"),
-		new Image("sw/lr/res/bomb.png"),
-		new Image("sw/lr/res/player.png")
+		new Image("res/terrain.png"),
+		new Image("res/bomb.png"),
+		new Image("res/player.png")
 	)
 
 	val z: Array[Int] = Array(
@@ -16,10 +16,6 @@ object Env extends ImageView
 
 	val TERRAIN = 0
 	val BOMB = 1
-
-	def createItem: Env =
-		if (Main.tool != -1) new Env(Main.tool)
-		else null
 }
 class Env(t: Int) extends ImageView
 {
