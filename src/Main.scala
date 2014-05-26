@@ -1,247 +1,192 @@
-import javafx.animation.{Interpolator, TranslateTransition, SequentialTransition}
+import java.lang.Boolean
+import java.nio.file.{StandardOpenOption, OpenOption, Paths, Files}
 import javafx.application.Platform
-import javafx.event.{EventHandler, ActionEvent}
-import javafx.scene.control.Button
-import javafx.scene.image.ImageView
-import javafx.scene.input.{KeyCode, KeyEvent}
-import javafx.scene.layout._
+import javafx.beans.value.{ObservableValue, ChangeListener}
+import javafx.event.{ActionEvent, EventHandler}
+import javafx.geometry.Insets
+import javafx.scene.control.{CheckBox, Button}
+import javafx.scene.input.{KeyCode, KeyEvent, MouseEvent}
+import javafx.scene.layout.{BorderPane, HBox, AnchorPane}
 import javafx.scene.Scene
 import javafx.stage.{WindowEvent, Stage}
-import javafx.util.Duration
-import scala.collection.mutable.ArrayBuffer
 
 object Main extends App
 {
-	var tool: GameObject[_ <: GameObject[_]] = null
+	final val STILL	= -1
+	final val LEFT	= 0
+	final val RIGHT	= 1
+	final val UP	= 2
+	final val DOWN	= 3
+	final val movements = Array((-1, 0), (1, 0), (0, -1), (0, 1))
 
-	val scale = 32
-	val cols = 30
-	val rows = 20
-	var grid: Array[Array[Tile]] = null
-
-	val maxPlayers = 2
-	val players = new ArrayBuffer[Player]
-
-	val LEFT = 0
-	val RIGHT = 1
-	val UP = 2
-	val DOWN = 3
-	val movements = Array((-Main.scale, 0), (Main.scale, 0), (0, -Main.scale), (0, Main.scale))
+	final val rows	= 20
+	final val cols	= 30
+	final val scale	= 32
 
 	new Main().launch
 
-	def addPlayer(player: Player, t: Tile): Unit =
+	def toItemCoords(_x: Double, _y: Double): (Int, Int) = (((_x - (_x % scale)) / scale).toInt, ((_y - (_y % scale)) / scale).toInt)
+	def toSceneCoords(_x: Int, _y: Int): (Double, Double) = (_x * scale, _y * scale)
+
+	def run(code: => Unit) = new Thread(new Runnable {def run = code}).start
+	def fx(code: => Unit) = if (Platform.isFxApplicationThread) code else Platform.runLater(new Runnable{def run = code})
+}
+
+class Main extends javafx.application.Application
+{
+	def launch = javafx.application.Application.launch()
+
+	var player: Player = null
+
+	var contentPane: BorderPane = null
+
+	var isEditing: CheckBox = null
+	var map: Map = null
+	val itemPlacementHandler: EventHandler[MouseEvent] = new EventHandler[MouseEvent]
 	{
-		for (i <- 0 to grid.length - 1)
-			for (j <- 0 to grid(i).length - 1)
-				if (grid(i)(j).equals(t))
-				{
-					player.init(players.length, i, j)
-					players += player
-				}
+		def handle(evt: MouseEvent) =
+		{
+			map.addItem(evt.getX, evt.getY, toolBox.createItem)
+		}
 	}
 
-	def getPlayerNode(p: Player): ImageView = grid(p.x)(p.y).getPlayerNode(p)
+	var toolBox: ToolSelector = null
 
-	def movePlayer(p: Player, dir: Int) =
+	def start(stg: Stage)
 	{
-		val xMod = if (movements(dir)._1 > 0) 1 else if (movements(dir)._1 < 0) -1 else 0
-		val yMod = if (movements(dir)._2 > 0) 1 else if (movements(dir)._2 < 0) -1 else 0
-		grid(p.x + xMod)(p.y + yMod).takeObj(p, grid(p.x)(p.y))
-		p.x += xMod
-		p.y -= yMod
+		player = new Player
+		contentPane = new BorderPane
+
+		toolBox = new ToolSelector
+
+		isEditing = new CheckBox("Edit Mode:")
+		isEditing.selectedProperty().addListener(new ChangeListener[Boolean] {def changed(prop: ObservableValue[_ <: Boolean], from: Boolean, to: Boolean) = toggleEditMode})
+		BorderPane.setMargin(isEditing, new Insets(5))
+		contentPane.setTop(isEditing)
+
+		map = new Map
+		BorderPane.setMargin(map, new Insets(5))
+		contentPane.setCenter(map)
+
+		val runGame = new Button("Run Game Loop")
+		runGame.setOnAction(new EventHandler[ActionEvent]{def handle(evt: ActionEvent) = gameLoop})
+		val hb = new HBox
+		hb.setSpacing(30)
+		hb.getChildren.addAll(toolBox, runGame)
+		BorderPane.setMargin(hb, new Insets(5))
+		contentPane.setBottom(hb)
+
+		stg.setOnHiding(new EventHandler[WindowEvent]{def handle(evt: WindowEvent) = quit})
+		val sce = new Scene(contentPane)
+		sce.addEventFilter(KeyEvent.KEY_PRESSED, new EventHandler[KeyEvent]
+		{
+			def handle(evt: KeyEvent) =
+			{
+				player.moving(evt.getCode match
+				{
+					case KeyCode.LEFT => Main.LEFT
+					case KeyCode.RIGHT => Main.RIGHT
+					case KeyCode.UP => Main.UP
+					case KeyCode.DOWN => Main.DOWN
+					case _ => Main.STILL
+				}) = true
+			}
+		})
+		sce.addEventFilter(KeyEvent.KEY_RELEASED, new EventHandler[KeyEvent]
+		{
+			def handle(evt: KeyEvent) =
+			{
+				player.moving(evt.getCode match
+				{
+					case KeyCode.LEFT => Main.LEFT
+					case KeyCode.RIGHT => Main.RIGHT
+					case KeyCode.UP => Main.UP
+					case KeyCode.DOWN => Main.DOWN
+					case _ => Main.STILL
+				}) = false
+			}
+		})
+		stg.setScene(sce)
+		stg.show
+
+		isEditing.setSelected(true)
+		load
 	}
 
 	def gameLoop =
 	{
 		Main.run(
+		{
 			while (true)
 			{
-				players.foreach(p =>
+				if (map.shouldFall(AnchorPane.getLeftAnchor(player), AnchorPane.getTopAnchor(player), player))
+					AnchorPane.setTopAnchor(player, AnchorPane.getTopAnchor(player) + 1)
+				else
 				{
-					if (p.y < rows - 1 && grid(p.x)(p.y + 1).isPassable)
+					for (i <- 0 to player.moving.length - 1)
 					{
-						grid(p.x)(p.y + 1).takeObj(p, grid(p.x)(p.y))
-						p.y += 1
-					}
-					else
-					{
-						val pn: ImageView = getPlayerNode(p)
-
-						if (p.currentAction.length == 0)
+						if (player.moving(i) && map.canGo(AnchorPane.getLeftAnchor(player), AnchorPane.getTopAnchor(player), player,  i))
 						{
-							if (p.test != null)
-								p.cancelMoving(pn.getTranslateX, pn.getTranslateY, p.test.getCurrentTime)
-						}
-						else
-						{
-							if (!p.currentAction.equals(p.lastAction) && p.test != null)
-							{
-								println(p.currentAction)
-								println(p.lastAction)
-								println
-								p.cancelMoving(pn.getTranslateX, pn.getTranslateY, p.test.getCurrentTime)
-							}
-
-							if (p.currentAction == "P")
-							{
-
-							}
-							else if (p.test == null)
-							{
-								p.test = new TranslateTransition
-								p.test.setNode(pn)
-								p.test.setRate(50)
-								p.test.setInterpolator(Interpolator.LINEAR)
-								p.lastAction = p.currentAction
-								p.currentAction match
-								{
-									case "L" =>
-										if (p.x > 0 && grid(p.x - 1)(p.y).isPassable)
-										{
-											p.test.setToX(-Main.scale - p.xMod)
-//											if (math.abs(p.test.getByX) > Main.scale)
-//												p.test.setDuration(p.test.getDuration.add(p.durMod))
-//											else
-//												p.test.setDuration(p.test.getDuration.subtract(p.durMod))
-											p.test.setOnFinished(new EventHandler[ActionEvent]
-											{
-												def handle(evt: ActionEvent) =
-												{
-													grid(p.x - 1)(p.y).takeObj(p, grid(p.x)(p.y))
-													p.x -= 1
-													p.cancelMoving(0, 0, Duration.millis(0))
-												}
-											})
-										}
-									case "R" =>
-										if (p.x < Main.cols - 1 && grid(p.x + 1)(p.y).isPassable)
-										{
-											p.test.setToX(Main.scale - p.xMod)
-//											if (math.abs(p.test.getByX) > Main.scale)
-//												p.test.setDuration(p.test.getDuration.add(p.durMod))
-//											else
-//												p.test.setDuration(p.test.getDuration.subtract(p.durMod))
-											p.test.setOnFinished(new EventHandler[ActionEvent]
-											{
-												def handle(evt: ActionEvent) =
-												{
-													grid(p.x + 1)(p.y).takeObj(p, grid(p.x)(p.y))
-													p.x += 1
-													p.cancelMoving(0, 0, Duration.millis(0))
-												}
-											})
-										}
-									case "U" =>
-										if (p.y > 0 && grid(p.x)(p.y - 1).isPassable)
-										{
-											val tt = grid(p.x)(p.y).moveObj(p, -Main.scale, 0, 500)
-											tt.setOnFinished(new EventHandler[ActionEvent]
-											{
-												def handle(evt: ActionEvent) =
-												{
-													grid(p.x)(p.y - 1).takeObj(p, grid(p.x)(p.y))
-													p.y -= 1
-												}
-											})
-											p.move(tt)
-										}
-									case "D" =>
-										if (p.y < rows - 1 && grid(p.x)(p.y + 1).isPassable)
-										{
-											val tt = grid(p.x)(p.y).moveObj(p, -Main.scale, 0, 500)
-											tt.setOnFinished(new EventHandler[ActionEvent]
-											{
-												def handle(evt: ActionEvent) =
-												{
-													grid(p.x)(p.y + 1).takeObj(p, grid(p.x)(p.y))
-													p.y += 1
-												}
-											})
-											p.move(tt)
-										}
-									case _ => println("Unknown command received")
-								}
-
-								Main.fx(p.test.play)
-							}
+							AnchorPane.setLeftAnchor(player, AnchorPane.getLeftAnchor(player) + Main.movements(i)._1)
+							AnchorPane.setTopAnchor(player, AnchorPane.getTopAnchor(player) + Main.movements(i)._2)
 						}
 					}
-				})
+				}
 
-				Thread.sleep(10)
-			})
+				Thread.sleep(5)
+			}
+		})
 	}
 
-	def run(code: => Unit) = new Thread(new Runnable {def run = code}).start
-	def fx(code: => Unit) = if (Platform.isFxApplicationThread) code else Platform.runLater(new Runnable{def run = code})
-}
-class Main extends javafx.application.Application
-{
-	def launch = javafx.application.Application.launch()
-
-	var contentPane: BorderPane = null
-	var map: GridPane = null
-
-	var toolBox: HBox = null
-
-	def start(stg: Stage) =
+	def toggleEditMode =
 	{
-		contentPane = new BorderPane
-
-		map = new GridPane
-		Main.grid = new Array(Main.cols)
-		for (i <- 0 to Main.grid.length - 1)
+		if (isEditing.isSelected)
 		{
-			val cc = new ColumnConstraints
-			cc.setMaxWidth(Main.scale)
-			cc.setMinWidth(Main.scale)
-			map.getColumnConstraints.add(cc)
-			Main.grid(i) = new Array(Main.rows)
-			for (j <- 0 to Main.grid(i).length - 1)
+			toolBox.setDisable(false)
+			map.addEventHandler(MouseEvent.MOUSE_DRAGGED, itemPlacementHandler)
+			map.addEventHandler(MouseEvent.MOUSE_PRESSED, itemPlacementHandler)
+		}
+		else
+		{
+			toolBox.setDisable(true)
+			map.removeEventHandler(MouseEvent.MOUSE_DRAGGED, itemPlacementHandler)
+			map.removeEventHandler(MouseEvent.MOUSE_PRESSED, itemPlacementHandler)
+		}
+	}
+
+	def load =
+	{
+		val lines = Files.readAllLines(Paths.get("config.ini"))
+		for (i <- 0 to lines.size - 1)
+		{
+			var line = lines.get(i)
+			if (line.length > 0)
 			{
-				if (i == 0)
+				line = line.substring(line.indexOf("x=") + 2, line.length)
+				val x = line.substring(0, line.indexOf(" ")).toInt
+				line = line.substring(line.indexOf("y=") + 2, line.length)
+				val y = line.substring(0, line.indexOf(" ")).toInt
+				line = line.substring(line.indexOf("items={") + 7, line.indexOf("}"))
+				if (line.length > 0)
 				{
-					val rc = new RowConstraints
-					rc.setMaxHeight(Main.scale)
-					rc.setMinHeight(Main.scale)
-					map.getRowConstraints.add(rc)
+					line.split(",").foreach(i =>
+					{
+						map.addItem(x, y, i match
+						{
+							case "P" => player = new Player;player
+							case "NT" => new NormalTerrain
+							case "B" => new Bomb
+							case "L" => new Ladder
+						})
+					})
 				}
-				Main.grid(i)(j) = new Tile
-				map.add(Main.grid(i)(j), i, j)
 			}
 		}
-		contentPane.setCenter(map)
-
-		toolBox = new HBox
-		val ter = new Button("Terrain")
-		ter.setOnAction(new EventHandler[ActionEvent]{def handle(evt: ActionEvent) = Main.tool = new NormalTerrain})
-		val b = new Button("Bomb")
-		b.setOnAction(new EventHandler[ActionEvent]{def handle(evt: ActionEvent) = Main.tool = new Bomb})
-		val pp = new Button("Place Player")
-		pp.setOnAction(new EventHandler[ActionEvent]{def handle(evt: ActionEvent) = Main.tool = new Player})
-		val runGame = new Button("Run Game Loop")
-		runGame.setOnAction(new EventHandler[ActionEvent]{def handle(evt: ActionEvent) = Main.gameLoop})
-		toolBox.getChildren.addAll(ter, b, pp, runGame)
-		contentPane.setBottom(toolBox)
-
-		stg.addEventHandler(WindowEvent.WINDOW_HIDING, new EventHandler[WindowEvent]{def handle(evt: WindowEvent) = System.exit(0)})
-		val sce = new Scene(contentPane)
-		sce.addEventFilter(KeyEvent.KEY_PRESSED, new EventHandler[KeyEvent]{def handle(evt: KeyEvent) = Main.players.foreach(p => p.toggleMoving(evt.getCode, true))})
-		sce.addEventFilter(KeyEvent.KEY_RELEASED, new EventHandler[KeyEvent]{def handle(evt: KeyEvent) = Main.players.foreach(p => p.toggleMoving(evt.getCode, false))})
-		stg.setScene(sce)
-		stg.show
 	}
-	
-	
 
-//	def quit =
-//	{
-//		val sb = new StringBuilder
-//		for (i <- 0 to grid.length - 1)
-//		{
-//			for (j <- 0 to grid(i).length - 1)
-//				sb.append(grid(i)(j).)
-//		}
-//	}
+	def quit =
+	{
+		Files.write(Paths.get("config.ini"), map.toXML.getBytes, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
+		System.exit(0)
+	}
 }
